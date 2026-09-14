@@ -185,3 +185,71 @@ Do not fabricate a failed attempt just to fill the template. Record actual attem
 - Remaining uncertainty: none for this test; single points of failure that
   remain (postgres/redis each have only one instance) are a production-plan
   item, not something fixed here -- will note in decisions.md/security_review.md.
+
+## Entry 7 — Container running as root and secret baked into image
+
+**Symptom:** No functional/runtime symptom. Found during a security review of
+`Dockerfile` and `docker-compose.yml`, not from an incident in the running stack.
+
+**Observation (before fix):**
+- `Dockerfile` copied `config/app.env` into the image (`COPY config/app.env /srv/app.env`)
+  and switched to `USER root` right before `CMD`, so the running container had
+  both a copy of the database password baked into the image layer and full
+  root privileges.
+- `docker-compose.yml` hardcoded `POSTGRES_PASSWORD` in plaintext in the
+  `postgres:` service, while `config/app.env` held a second, independently
+  maintained copy of the same credential for the app services — the same
+  "two copies of one secret can drift apart" pattern that caused the
+  Stage 2 password mismatch.
+- `config/app.env` (with the real password) was already tracked in git
+  history from earlier commits.
+
+**Fix:**
+- `Dockerfile`: removed the `COPY config/app.env /srv/app.env` line and
+  changed `USER root` → `USER app`.
+- `docker-compose.yml`: removed `env_file: ./config/app.env` from the
+  `x-app` anchor; `postgres:` and `x-app` environment blocks now read
+  `${POSTGRES_USER}`, `${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}`,
+  `${POSTGRES_DB}` from a single root-level `.env` file (gitignored);
+  `DATABASE_URL`/`REDIS_URL` are built from those same variables instead of
+  being duplicated.
+- Added `.env.example` (root) and `config/app.env.example` as safe,
+  committed templates.
+- Ran `git rm --cached config/app.env` to stop tracking the file going
+  forward, since adding it to `.gitignore` alone does not retroactively
+  untrack an already-tracked file.
+
+**Failed attempt / environment noise:** during `docker compose up -d` after
+the rebuild, nginx failed to start with
+`bind: An attempt was made to access a socket in a way forbidden by its
+access permissions` on port 8080. `netstat -ano | findstr :8080` showed a
+listener on `0.0.0.0:8080` (PID 5820); `tasklist /FI "PID eq 5820"` identified
+it as `httpd.exe` (XAMPP Apache) — the same unrelated local-machine conflict
+as Stage 1, just a new PID after a restart. Fixed by killing it from an
+Administrator prompt (`taskkill /PID 5820 /F`), unrelated to the actual
+security fix.
+
+**Retest evidence:**
+
+docker compose exec app-01 whoami
+→ app
+
+docker compose exec app-01 sh -c "ls /srv/app.env 2>&1"
+→ ls: cannot access '/srv/app.env': No such file or directory
+
+curl http://127.0.0.1:8080/ready
+→ {"dependencies":{"postgres":"ready","redis":"ready"}, ...}
+
+curl http://127.0.0.1:8080/records
+→ records intact (no data loss from rebuild)
+
+
+**Related commit:** `ede8940` — security: run app as non-root, stop baking
+secrets into image, source credentials from .env
+
+**Remaining uncertainty / known limitation:** the plaintext password value
+still exists in earlier git commit history (before this fix). Fully removing
+it would require rewriting git history (`git filter-repo` / BFG), which was
+not done here due to the risk of a forced history rewrite this close to the
+deadline. This is logged as an open finding in `security_review.md` rather
+than silently left out.
