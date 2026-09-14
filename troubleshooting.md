@@ -53,3 +53,30 @@ Do not fabricate a failed attempt just to fill the template. Record actual attem
 - Fix: nginx.conf server line -> app-01:8080; docker-compose.yml
   APP_HOST -> "0.0.0.0"; nginx ports mapping -> ":80". Also learned that
   nginx caches its config at container start 
+
+## Entry 2 / 2026-09-14
+- Symptom: /ready returned {"postgres":"unavailable","redis":"ready"} even
+  after fixing the nginx/bind issues in Entry 1.
+- Hypothesis: config/app.env has wrong ports for postgres/redis.
+- Command or test: docker compose logs app-01 | findstr /I "postgres error dependency"
+- Actual output: only showed "configuration_loaded" with
+  database_url=postgresql://barq_app:BarqLabOnly_7qN2vK8d@postgres:5432/barq_tasks
+  -- the app does not log the actual connection failure reason at all.
+- Failed attempt and what changed your thinking: searched logs for
+  "password fatal traceback authentication" -- no match. Confirmed the app
+  swallows dependency errors silently; had to diagnose by comparing the
+  config file values directly instead of trusting the logs.
+- Root cause: two separate mismatches in config/app.env:
+  (1) ports (postgres:5433, redis:6380) did not match the running services
+      (5432, 6379)
+  (2) DATABASE_URL password (...7qN2vK8d) did not match
+      POSTGRES_PASSWORD in docker-compose.yml (...7qN2vK8c)
+- Fix: corrected both port numbers and the password's last character.
+- Retest evidence: curl http://127.0.0.1:8080/ready ->
+  {"dependencies":{"postgres":"ready","redis":"ready"},...,"status":"ready"}
+  curl http://127.0.0.1:8080/counter -> {"counter":1,...}
+  curl http://127.0.0.1:8080/records -> 2 seeded records listed
+- Related commit: fc955c5
+- Remaining uncertainty: the app never logs *why* a dependency is
+  unavailable -- worth flagging in security_review.md as a
+  diagnosability/logging gap.
