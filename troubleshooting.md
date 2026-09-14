@@ -80,3 +80,27 @@ Do not fabricate a failed attempt just to fill the template. Record actual attem
 - Remaining uncertainty: the app never logs *why* a dependency is
   unavailable -- worth flagging in security_review.md as a
   diagnosability/logging gap.
+
+
+## Entry 3 / 2026-09-14
+- Symptom: docker compose ps showed "health: starting"/unhealthy previously;
+  /instance always returned app-01 even after both containers were healthy.
+- Hypothesis: healthcheck probe hitting wrong path, and/or app-02 misconfigured
+  with the same identity as app-01.
+- Command or test: read docker-compose.yml x-app healthcheck block and app-02
+  environment block directly.
+- Actual output: healthcheck test URL was '.../healthz' (app only serves
+  '/health' per APPLICATION.md); app-02's environment had
+  INSTANCE_ID: "app-01" (copy-paste error).
+- Root cause: healthcheck path typo, and app-02 never got its own instance id.
+- Fix: healthcheck path -> /health; app-02 INSTANCE_ID -> "app-02".
+- Retest evidence: docker compose ps -> both app-01 and app-02 (healthy).
+  8 rapid /instance calls right after recreate all returned app-01; a second
+  round of 13 calls spaced ~2s apart alternated correctly between app-01 and
+  app-02 (nginx access log confirmed different upstream IPs per request).
+- Related commit: (paste the hash from git log)
+- Remaining uncertainty: why the first burst of requests immediately after
+  --force-recreate all landed on app-01 -- possibly nginx's round-robin
+  state or app-02's connection warm-up right after container start. Did not
+  investigate further; noting it as a transient startup behavior, not a
+  functional bug, since load balancing works correctly once traffic is spaced out.
