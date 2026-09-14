@@ -10,3 +10,4 @@ evidence/local/
 .assessment/
 backups/
 *.dump
+config/app.env
