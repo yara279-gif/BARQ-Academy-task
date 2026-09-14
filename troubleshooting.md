@@ -156,3 +156,32 @@ Do not fabricate a failed attempt just to fill the template. Record actual attem
     netstat -ano | findstr ":15432 :16379" -> no output (ports not exposed)
 - Related commit:cc7a89fcf4d4e301264ac79701c9f9e9e80bc015 
 - Remaining uncertainty: none.
+
+## Entry 6 / 2026-09-14
+- Symptom: needed to confirm that stopping one backend does not take down
+  the whole service.
+- Hypothesis: nginx.conf had max_fails=0 (disables passive health checking)
+  and proxy_next_upstream off (disables retry to the other backend); compose
+  had restart: "no" everywhere and no resource limits or health-gated
+  startup ordering.
+- Command or test: read nginx.conf upstream/location blocks and
+  docker-compose.yml restart/depends_on sections directly.
+- Actual output: confirmed max_fails=0, proxy_next_upstream off, restart:
+  "no" on x-app, no depends_on conditions anywhere except a plain
+  (unconditioned) nginx depends_on on the two apps.
+- Root cause: no failover path configured, and no startup ordering
+  guarantee that dependencies were actually ready before apps/nginx started.
+- Fix: max_fails=3 fail_timeout=10s; proxy_next_upstream error timeout
+  http_502 http_503 with proxy_next_upstream_tries 2; restart:
+  unless-stopped everywhere; mem_limit/cpus per service; depends_on with
+  condition: service_healthy (apps wait for postgres+redis, nginx waits
+  for both apps).
+- Retest evidence:
+    docker compose stop app-01 -> 10/10 /instance requests still succeeded,
+    all served by app-02
+    docker compose start app-01 -> both healthy again within ~30s; 10
+    subsequent requests alternated correctly between app-01 and app-02
+- Related commit: 571134e8f933ff751947c445181a77aed10324ff
+- Remaining uncertainty: none for this test; single points of failure that
+  remain (postgres/redis each have only one instance) are a production-plan
+  item, not something fixed here -- will note in decisions.md/security_review.md.
