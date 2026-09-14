@@ -98,9 +98,39 @@ Do not fabricate a failed attempt just to fill the template. Record actual attem
   8 rapid /instance calls right after recreate all returned app-01; a second
   round of 13 calls spaced ~2s apart alternated correctly between app-01 and
   app-02 (nginx access log confirmed different upstream IPs per request).
-- Related commit: (paste the hash from git log)
+- Related commit: 96f57277a792d4232bb72058d653f150dcc75328
 - Remaining uncertainty: why the first burst of requests immediately after
   --force-recreate all landed on app-01 -- possibly nginx's round-robin
   state or app-02's connection warm-up right after container start. Did not
   investigate further; noting it as a transient startup behavior, not a
   functional bug, since load balancing works correctly once traffic is spaced out.
+
+## Entry 4 / 2026-09-14
+- Symptom: needed to prove PostgreSQL data survives container recreation
+  before trusting the persistence setup.
+- Hypothesis: docker-compose.yml volume mount and Redis persistence flags
+  looked misconfigured on inspection.
+- Command or test: read docker-compose.yml postgres/redis service blocks
+  directly.
+- Actual output: postgres had `tmpfs: [/var/lib/postgresql/data]` (a RAM
+  disk) shadowing the real data directory, while the named volume
+  `postgres-data` was mounted at the wrong path
+  (/var/lib/postgresql/backup, which Postgres never writes to). Redis had
+  `--save "" --appendonly no`, disabling all persistence, with no volume
+  attached at all.
+- Root cause: two-part misconfiguration on postgres (tmpfs shadowing +
+  wrong volume path), plus Redis persistence disabled outright.
+- Fix: removed the tmpfs line; remounted postgres-data at
+  /var/lib/postgresql/data; enabled Redis --appendonly yes with its own
+  redis-data volume.
+- Retest evidence:
+    POST /records {"title":"Persistence proof"} -> id 3 created
+    GET /records -> id 3 present
+    docker compose down (no -v, volumes kept)
+    docker compose up -d
+    GET /records -> id 3 STILL present alongside the original 2 seeded rows
+- Related commit:  0ba9c6cc2fd7e99fb58ec73cc5719abb2f6cf8e2
+- Remaining uncertainty: none for this specific test; a real production
+  concern (noted separately in security_review.md/decisions.md) is that
+  this only proves survival across a clean `down`/`up`, not a crash or
+  a `down -v` mistake by an operator.
