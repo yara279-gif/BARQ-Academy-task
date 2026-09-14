@@ -134,3 +134,25 @@ Do not fabricate a failed attempt just to fill the template. Record actual attem
   concern (noted separately in security_review.md/decisions.md) is that
   this only proves survival across a clean `down`/`up`, not a crash or
   a `down -v` mistake by an operator.
+
+## Entry 5 / 2026-09-14
+- Symptom: needed to confirm NGINX cannot reach the databases directly, and
+  that no database ports are exposed on the host.
+- Hypothesis: docker-compose.yml had nginx on both frontend and backend
+  networks, and postgres/redis both published host ports.
+- Command or test: read docker-compose.yml network/ports sections directly.
+- Actual output: nginx networks: [frontend, backend]; postgres
+  ports: ["127.0.0.1:15432:5432"]; redis ports: ["127.0.0.1:16379:6379"].
+- Root cause: over-broad network membership for nginx, and unnecessary
+  host port publishing for the data tier.
+- Fix: nginx networks -> [frontend] only; removed both ports: entries.
+- Retest evidence:
+    docker compose exec nginx sh -c "nc -z -w2 postgres 5432" -> "nc: bad
+    address 'postgres'", exit=1
+    docker compose exec nginx sh -c "nc -z -w2 redis 6379" -> "nc: bad
+    address 'redis'", exit=1
+    curl /ready -> still {"postgres":"ready","redis":"ready"} (apps retain
+    backend access)
+    netstat -ano | findstr ":15432 :16379" -> no output (ports not exposed)
+- Related commit:cc7a89fcf4d4e301264ac79701c9f9e9e80bc015 
+- Remaining uncertainty: none.
