@@ -91,7 +91,7 @@ Do not fabricate a failed attempt just to fill the template. Record actual attem
   environment block directly.
 - Actual output: healthcheck test URL was '.../healthz' (app only serves
   '/health' per APPLICATION.md); app-02's environment had
-  INSTANCE_ID: "app-01" (copy-paste error).
+  INSTANCE_ID: "app-01".
 - Root cause: healthcheck path typo, and app-02 never got its own instance id.
 - Fix: healthcheck path -> /health; app-02 INSTANCE_ID -> "app-02".
 - Retest evidence: docker compose ps -> both app-01 and app-02 (healthy).
@@ -253,3 +253,51 @@ it would require rewriting git history (`git filter-repo` / BFG), which was
 not done here due to the risk of a forced history rewrite this close to the
 deadline. This is logged as an open finding in `security_review.md` rather
 than silently left out.
+
+
+## Entry 8 — Containers did not all come back after a full host restart
+
+**Symptom:** After the machine was restarted, `docker compose ps` showed only
+`app-01`, `postgres` and `redis` as `Up (healthy)`. `app-02` and `nginx` were
+missing from the default `ps` output entirely.
+
+**Command / test:**
+
+docker compose ps -a
+
+**Actual output:** `app-02` — `Exited (143) 22 hours ago`; `nginx` — `Exited (0)
+22 hours ago`. Both carry `restart: unless-stopped`, same as `app-01`, `postgres`
+and `redis`, which did come back automatically.
+
+**Failed attempt / what changed thinking:** Initially assumed `restart:
+unless-stopped` guarantees every container returns after any host reboot. The
+uneven result (3 of 5 came back, 2 didn't) showed that assumption doesn't hold
+reliably across a full Docker Desktop / host restart on this machine.
+
+**Contributing factor:** port 8080 was re-occupied by XAMPP's `httpd.exe`
+(same conflict as Stage 1/Stage 7, new PID) after the reboot, which would at
+minimum have blocked `nginx` from rebinding even if Docker attempted to
+restart it.
+
+**Fix (this session):** killed the process holding port 8080
+(`taskkill /PID <pid> /F` from an Administrator prompt), then
+`docker compose up -d`, which brought `app-02` and `nginx` back to `healthy`
+within seconds — no data loss, no rebuild needed.
+
+**Retest evidence:**
+
+docker compose ps
+→ all 5 containers Up (healthy), nginx shows 127.0.0.1:8080->80/tcp
+
+python failure_test.py
+→ 6/6 checks passed
+
+
+**Related commit:** none (operational recovery, not a code fix) — logged here
+and in `security_review.md` as a production-readiness finding.
+
+**Remaining uncertainty:** unclear whether `app-02`/`nginx` failed to restart
+purely because of the port conflict, or because Docker Desktop's restart-policy
+handling across a full host reboot is itself unreliable for locally-built
+images. In production this would be mitigated by an orchestrator (e.g.
+Kubernetes) rather than relying on `restart: unless-stopped` alone.
