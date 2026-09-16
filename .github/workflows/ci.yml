@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Create CI-only .env (test credentials, never real secrets)
+        run: |
+          echo "PUBLIC_PORT=8080" > .env
+          echo "POSTGRES_USER=ci_test_user" >> .env
+          echo "POSTGRES_DB=ci_test_db" >> .env
+          echo "POSTGRES_PASSWORD=ci_test_password_not_real" >> .env
+
+      - name: Syntax / Compose config check
+        run: docker compose config
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start the stack
+        run: docker compose up -d
+
+      - name: Wait for the stack to respond
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
+              echo "Stack is responding."
+              exit 0
+            fi
+            echo "Waiting for stack to respond... ($i/30)"
+            sleep 2
+          done
+          echo "Stack never responded." >&2
+          docker compose logs
+          exit 1
+
+      - name: Run validate.py
+        run: python3 validate.py
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down
